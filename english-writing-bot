@@ -1,0 +1,344 @@
+worker: python bot.py
+python-telegram-bot==21.6
+anthropic==0.34.2
+import os
+import json
+import asyncio
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ContextTypes, filters
+)
+import anthropic
+
+# ── Tokens ────────────────────────────────────────────────────────────────────
+TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+# ── Writing types ─────────────────────────────────────────────────────────────
+TYPES = {
+    "paragraph": {"uz": "Paragraf",    "en": "Paragraph"},
+    "email":     {"uz": "Xat / Email", "en": "Email"},
+    "essay":     {"uz": "Esse",        "en": "Essay"},
+    "story":     {"uz": "Hikoya",      "en": "Story"},
+    "opinion":   {"uz": "Fikr",        "en": "Opinion"},
+}
+
+TOPICS = [
+    "Describe your favourite childhood memory.",
+    "What is the most important invention of the 21st century?",
+    "Should social media have age restrictions? Why or why not?",
+    "Describe a place where you feel completely at peace.",
+    "What does success mean to you personally?",
+    "Is remote work better than working in an office?",
+    "Describe your ideal Saturday morning in detail.",
+    "What would you do if you had one extra hour each day?",
+    "Should students be required to learn a second language?",
+    "What is one habit that has changed your life for the better?",
+    "Describe the best meal you have ever eaten.",
+    "What are the advantages and disadvantages of city life?",
+    "If you could travel anywhere, where would you go and why?",
+    "What is your favourite season and why?",
+    "Describe a person who has inspired you in your life.",
+]
+
+import random
+
+# ── User state ────────────────────────────────────────────────────────────────
+user_state: dict[int, dict] = {}
+
+def get_state(user_id: int) -> dict:
+    if user_id not in user_state:
+        user_state[user_id] = {
+            "wtype": "paragraph",
+            "lang": "uz",
+            "topic": random.choice(TOPICS),
+        }
+    return user_state[user_id]
+
+# ── /start ────────────────────────────────────────────────────────────────────
+async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    state = get_state(update.effective_user.id)
+    state["topic"] = random.choice(TOPICS)
+
+    text = (
+        "✍️ *WriteUp Bot*\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "Salom\\! Men sizning *ingliz tili yozish murabbiyingizman*\\.\n\n"
+        "📌 *Qanday ishlaydi:*\n"
+        "1\\. Yozish turini tanlang\n"
+        "2\\. Mavzuni oling\n"
+        "3\\. Inglizcha yozing va yuboring\n"
+        "4\\. AI tahlil qiladi va o'zbekcha tushuntiradi\\!\n\n"
+        "Boshlash uchun quyidagi tugmalardan foydalaning 👇"
+    )
+
+    kb = main_keyboard()
+    await update.message.reply_text(text, parse_mode="MarkdownV2", reply_markup=kb)
+
+# ── /help ─────────────────────────────────────────────────────────────────────
+async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "📖 *Buyruqlar:*\n\n"
+        "/start \\- Botni qayta ishga tushirish\n"
+        "/topic \\- Yangi mavzu olish\n"
+        "/type \\- Yozish turini tanlash\n"
+        "/idea \\- Yozish g'oyasi olish\n"
+        "/tips \\- Yozishni yaxshilash maslahatlari\n"
+        "/help \\- Yordam\n\n"
+        "💡 *Ishlatish:* Inglizcha matn yozing va yuboring — men tekshirib beraman\\!"
+    )
+    await update.message.reply_text(text, parse_mode="MarkdownV2", reply_markup=main_keyboard())
+
+# ── Main keyboard ─────────────────────────────────────────────────────────────
+def main_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📝 Yozish turi",  callback_data="menu_type"),
+            InlineKeyboardButton("🎯 Mavzu",        callback_data="menu_topic"),
+        ],
+        [
+            InlineKeyboardButton("💡 G'oya ber",    callback_data="menu_idea"),
+            InlineKeyboardButton("📚 Maslahatlar",  callback_data="menu_tips"),
+        ],
+    ])
+
+# ── /topic ────────────────────────────────────────────────────────────────────
+async def topic_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    state = get_state(update.effective_user.id)
+    state["topic"] = random.choice(TOPICS)
+    wtype = TYPES[state["wtype"]]["uz"]
+
+    msg = (
+        f"🎯 *Yangi mavzu:*\n\n"
+        f"_{escape_md(state['topic'])}_\n\n"
+        f"📌 Tur: *{escape_md(wtype)}*\n\n"
+        f"Ushbu mavzuda inglizcha yozing va yuboring\\!"
+    )
+    target = update.message or update.callback_query.message
+    await target.reply_text(msg, parse_mode="MarkdownV2", reply_markup=main_keyboard())
+
+# ── /type ─────────────────────────────────────────────────────────────────────
+async def type_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    buttons = [
+        [InlineKeyboardButton(f"{'✅ ' if get_state(update.effective_user.id)['wtype'] == k else ''}{v['uz']}", callback_data=f"type_{k}")]
+        for k, v in TYPES.items()
+    ]
+    await update.message.reply_text(
+        "📝 *Yozish turini tanlang:*",
+        parse_mode="MarkdownV2",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+# ── /idea ─────────────────────────────────────────────────────────────────────
+async def idea_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    state = get_state(update.effective_user.id)
+    msg = update.message or update.callback_query.message
+    wait = await msg.reply_text("💡 G'oyalar tayyorlanmoqda...")
+
+    prompt = (
+        f"Give me 3 short writing ideas or outlines for a {state['wtype']} about: \"{state['topic']}\". "
+        "Keep each idea to 2-3 sentences. Respond entirely in Uzbek language. "
+        "Number them 1, 2, 3. Make them practical and easy for a beginner."
+    )
+
+    try:
+        resp = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        ideas = resp.content[0].text
+        await wait.edit_text(
+            f"💡 *G'oyalar — {escape_md(state['topic'][:40])}...*\n\n{escape_md(ideas)}",
+            parse_mode="MarkdownV2",
+            reply_markup=main_keyboard()
+        )
+    except Exception as e:
+        await wait.edit_text("❌ Xatolik yuz berdi. Qayta urinib ko'ring.")
+
+# ── /tips ─────────────────────────────────────────────────────────────────────
+async def tips_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "📚 *Yozishni yaxshilash maslahatlari:*\n\n"
+        "1️⃣ Har kuni kamida 5\\-10 daqiqa inglizcha yozing — muntazamlik muhim\\.\n\n"
+        "2️⃣ Xatolaringizdan qo'rqmang — tuzatishlar o'ziyoq o'rgatadi\\.\n\n"
+        "3️⃣ Yaxshi ko'rgan inglizcha matnlarni o'qing — til hissi o'sadi\\.\n\n"
+        "4️⃣ Yangi o'rganilgan so'zni darhol gap ichida ishlating\\.\n\n"
+        "5️⃣ Avval g'oyangizni yozing, keyin tuzating — ikki alohida jarayon\\.\n\n"
+        "6️⃣ Qisqa gaplardan boshlang — oddiy va aniq yozish ham mahorat\\."
+    )
+    target = update.message or (update.callback_query and update.callback_query.message)
+    await target.reply_text(text, parse_mode="MarkdownV2", reply_markup=main_keyboard())
+
+# ── Callback handler ──────────────────────────────────────────────────────────
+async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    state = get_state(q.from_user.id)
+    data = q.data
+
+    if data == "menu_type":
+        buttons = [
+            [InlineKeyboardButton(
+                f"{'✅ ' if state['wtype'] == k else ''}{v['uz']}",
+                callback_data=f"type_{k}"
+            )]
+            for k, v in TYPES.items()
+        ]
+        await q.message.reply_text(
+            "📝 *Yozish turini tanlang:*",
+            parse_mode="MarkdownV2",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif data == "menu_topic":
+        state["topic"] = random.choice(TOPICS)
+        wtype = TYPES[state["wtype"]]["uz"]
+        await q.message.reply_text(
+            f"🎯 *Yangi mavzu:*\n\n_{escape_md(state['topic'])}_\n\n"
+            f"📌 Tur: *{escape_md(wtype)}*\n\nInglizcha yozing va yuboring\\!",
+            parse_mode="MarkdownV2",
+            reply_markup=main_keyboard()
+        )
+
+    elif data == "menu_idea":
+        await idea_cmd(update, ctx)
+
+    elif data == "menu_tips":
+        await tips_cmd(update, ctx)
+
+    elif data.startswith("type_"):
+        chosen = data.replace("type_", "")
+        state["wtype"] = chosen
+        wtype_uz = TYPES[chosen]["uz"]
+        await q.message.reply_text(
+            f"✅ Yozish turi tanlandi: *{escape_md(wtype_uz)}*\n\n"
+            f"Endi inglizcha {escape_md(wtype_uz.lower())} yozing va yuboring\\!",
+            parse_mode="MarkdownV2",
+            reply_markup=main_keyboard()
+        )
+
+# ── Text message — check writing ──────────────────────────────────────────────
+async def check_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    words = len(text.split())
+
+    if words < 5:
+        await update.message.reply_text(
+            "⚠️ Iltimos, kamida 5 ta so'z yozing.",
+            reply_markup=main_keyboard()
+        )
+        return
+
+    state = get_state(update.effective_user.id)
+    wait = await update.message.reply_text("🔍 Tahlil qilinmoqda...")
+
+    prompt = f"""You are an expert English writing coach for Uzbek learners. Analyze this {state['wtype']} and provide detailed, encouraging feedback.
+
+Text: "{text}"
+
+Respond ONLY with a valid JSON object, no markdown, no backticks:
+{{
+  "score": 72,
+  "grammar_feedback": "2-3 sentence comment on grammar in Uzbek",
+  "vocabulary_feedback": "2-3 sentence comment on vocabulary in Uzbek",
+  "style_feedback": "2-3 sentence comment on style in Uzbek",
+  "strengths": "1-2 sentences about what was done well, in Uzbek",
+  "corrections": [
+    {{"type": "grammar", "wrong": "wrong phrase", "right": "corrected", "explanation": "in Uzbek"}},
+    {{"type": "vocab", "wrong": "weak word", "right": "better word", "explanation": "in Uzbek"}}
+  ],
+  "improved_version": "Full improved version in English"
+}}
+Provide 2-4 corrections. Score 0-100."""
+
+    try:
+        resp = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1200,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = resp.content[0].text.replace("```json", "").replace("```", "").strip()
+        j = json.loads(raw)
+
+        score = int(j.get("score", 0))
+        verdict = (
+            "🌟 A'lo!" if score >= 80 else
+            "👍 Yaxshi" if score >= 65 else
+            "📈 Rivojlanmoqda" if score >= 45 else
+            "💪 Mashq qiling"
+        )
+        bar = "█" * (score // 10) + "░" * (10 - score // 10)
+
+        lines = [
+            f"📊 *Natija: {score}/100 — {verdict}*",
+            f"`{bar}`",
+            "",
+            f"⭐ *Kuchli tomonlar:*",
+            escape_md(j.get("strengths", "")),
+            "",
+            f"📐 *Grammatika:*",
+            escape_md(j.get("grammar_feedback", "")),
+            "",
+            f"📚 *Lug'at:*",
+            escape_md(j.get("vocabulary_feedback", "")),
+            "",
+            f"✏️ *Uslub:*",
+            escape_md(j.get("style_feedback", "")),
+        ]
+
+        corrections = j.get("corrections", [])
+        if corrections:
+            lines += ["", "🔧 *Tuzatishlar:*"]
+            for c in corrections:
+                tl = {"grammar": "Grammatika", "vocab": "Lug'at", "style": "Uslub"}.get(c.get("type",""), "")
+                lines.append(
+                    f"• \\[{escape_md(tl)}\\] ~~{escape_md(c.get('wrong',''))}~~ → *{escape_md(c.get('right',''))}*\n"
+                    f"  _{escape_md(c.get('explanation',''))}_"
+                )
+
+        improved = j.get("improved_version", "")
+        if improved:
+            lines += ["", "✨ *Yaxshilangan versiya:*", f"_{escape_md(improved)}_"]
+
+        result = "\n".join(lines)
+
+        # Telegram max 4096 chars
+        if len(result) > 4000:
+            result = result[:3990] + "\\.\\.\\.\\."
+
+        await wait.edit_text(result, parse_mode="MarkdownV2", reply_markup=main_keyboard())
+
+    except Exception as e:
+        await wait.edit_text(
+            "❌ Xatolik yuz berdi. Qayta urinib ko'ring.\n\nAgar muammo davom etsa, /start buyrug'ini yuboring.",
+            reply_markup=main_keyboard()
+        )
+
+# ── Escape ────────────────────────────────────────────────────────────────────
+def escape_md(text: str) -> str:
+    """Escape MarkdownV2 special chars."""
+    special = r'_*[]()~`>#+-=|{}.!'
+    return "".join(f"\\{c}" if c in special else c for c in str(text))
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+def main():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help",  help_cmd))
+    app.add_handler(CommandHandler("topic", topic_cmd))
+    app.add_handler(CommandHandler("type",  type_cmd))
+    app.add_handler(CommandHandler("idea",  idea_cmd))
+    app.add_handler(CommandHandler("tips",  tips_cmd))
+    app.add_handler(CallbackQueryHandler(callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_writing))
+
+    print("✅ WriteUp Bot ishga tushdi...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
